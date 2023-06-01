@@ -1,0 +1,207 @@
+#include <Arduino_FreeRTOS.h>
+#include <task.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Servo.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const byte ROWS = 4;  //4 hang
+const byte COLS = 3;  //3 cot
+char keys[ROWS][COLS] = {
+  { '1', '2', '3' },
+  { '4', '5', '6' },
+  { '7', '8', '9' },
+  { '*', '0', '#' }
+};                                     // Ma trận Keypad
+byte rowPins[ROWS] = { A0, 4, 3, 2 };  //Kết nối hàng với keypad
+byte colPins[COLS] = { 8, 7, 6 };      //Kết nối cột với keypad
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+char key_code[3];                      // Mảng chứa mật khẩu nhập vào
+char password[3] = { '1', '2', '3' };  // Tạo mật khẩu 
+int i = 0;                             // Biến chạy của chuỗi ký tự
+
+int card1[4]{ 54, 205, 29, 31 };  // UID thẻ từ được nhận diện
+
+constexpr uint8_t RST_PIN = 9;  //  SS_PIN của RC522 RFID Reader nối đến chân 10 của Arduino
+constexpr uint8_t SS_PIN = 10;  //  RST_PIN của RC522 RFID Reader nối đến chân 9 của Arduino
+MFRC522 rfid(SS_PIN, RST_PIN); 
+MFRC522::MIFARE_Key key;
+
+Servo myservo;  // Tạo đối tượng để điều khiển servo
+int pos = 0;    // Biến để lưu vị trí của servo
+
+int Buzzer = A1;    // Còi nối A1
+int RedLed = A2;    // Đèn đỏ nối A2
+int GreenLed = A3;  // Đèn xanh nối A3
+
+unsigned int k = 0;
+byte nuidPICC[4];  // Mảng lưu UID của thẻ
+
+//Định nghĩa task 
+TaskHandle_t xTaskHandle1;
+TaskHandle_t xTaskHandle2;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(RedLed, OUTPUT);    
+  pinMode(GreenLed, OUTPUT); 
+  pinMode(Buzzer, OUTPUT);    
+  myservo.attach(5);  // Kết nối servo với chân 5
+  SPI.begin();        // Khởi tạo SPI
+  rfid.PCD_Init();    
+  lcd.init();  // Khoi tao LCD
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("  RFID & KEYPAD ");
+  lcd.setCursor(0, 1);
+  lcd.print("  Lock Project  ");
+  for (byte i = 0; i < 6; i++) {
+    key.keyByte[i] = 0xFF;  // Mảng chứa UID của RFID
+  }
+ xTaskCreate(Task1, "Task1", 64, NULL, 1, &xTaskHandle1); //Tạo tác vụ 1 điều khiển keypad
+ xTaskCreate(Task2, "Task2", 64, NULL, 1, &xTaskHandle2); //Tạo tác vụ 1 điều khiển RFID
+ delay(10);
+ vTaskStartScheduler();  //Khởi tạo bộ lập lịch
+}
+void loop(){
+}
+
+void Task1(void * pvParameters) {
+ for (;;) {
+char key = keypad.getKey();
+  if (key != NO_KEY) {  // Kiểm tra có nhấn phím k?
+    key_code[i++] = key; 
+    k = i;
+    tone(Buzzer, 3000); //Còi kêu beep ngắn
+    delay(100);
+    noTone(Buzzer);  //Tắt còi
+    delay(100);
+  }
+
+  if (k == 3) {
+    if (!strncmp(password, key_code, 3))  // So sánh mã nhập với password
+    {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Access Granted");   // Hiển thị thành công
+      digitalWrite(GreenLed, HIGH);  // Đèn xanh sáng
+      delay(300);
+      tone(Buzzer, 3000);  //Còi kêu beep ngắn
+      delay(500);
+      noTone(Buzzer);
+      delay(100);
+      tone(Buzzer, 3000);
+      delay(500);
+      noTone(Buzzer);
+      delay(100);
+      myservo.write(110); // Servo xoay mở cửa
+      delay(2000);        // Giữ lại 2s
+      myservo.write(200); // Servo xoay đóng cửa
+      delay(200);
+      digitalWrite(GreenLed, LOW); // Đèn xanh tắt
+      delay(200);
+      // =============== RESET======================
+      i = k = 0;
+      lcd.setCursor(0, 0);
+      lcd.print("Scan Your Card");
+      lcd.setCursor(0, 1);
+      lcd.print("Enter the Pass");
+    } else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Access Denied");  // Hiển thị thất bại
+      digitalWrite(RedLed, HIGH);  // Đèn đỏ bật
+      delay(300);
+      tone(Buzzer, 3000, 900);  // Còi kêu beep dài
+      delay(1500);
+      noTone(Buzzer);
+      delay(200);
+      tone(Buzzer, 3000, 900);
+      delay(1500);
+      noTone(Buzzer);
+      delay(500);
+      digitalWrite(RedLed, LOW); // Đèn đỏ tắt
+      delay(200);
+      // =============== RESET======================
+      i = k = 0;
+      lcd.setCursor(0, 0);
+      lcd.print("Scan Your Card");
+      lcd.setCursor(0, 1);
+      lcd.print("Enter the Pass");
+    }
+  }
+ }
+ vTaskDelete(NULL);
+}
+
+void Task2(void * pvParameters) {
+ for (;;) {
+  if (!rfid.PICC_IsNewCardPresent())
+    return;
+
+  if (!rfid.PICC_ReadCardSerial())
+    return;
+
+  Serial.print(F("PICC type: "));
+  MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
+  Serial.println(rfid.PICC_GetTypeName(piccType));
+  //Lưu UID trong mảng nuiPICC
+  for (byte i = 0; i < 4; i++) {
+    nuidPICC[i] = rfid.uid.uidByte[i];
+    Serial.println(nuidPICC[i]);
+  }
+  if (card1[0] == nuidPICC[0] && card1[1] == nuidPICC[1] && card1[2] == nuidPICC[2] && card1[3] == nuidPICC[3]) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Access Granted");  //UID thẻ đúng với thẻ đã lưu
+    digitalWrite(GreenLed, HIGH);  // Đèn xanh bật
+    tone(Buzzer, 3000);
+    delay(500);
+    noTone(Buzzer);
+    delay(100);
+    tone(Buzzer, 3000);
+    delay(500);
+    noTone(Buzzer);
+    delay(100);
+    myservo.write(110);
+    delay(2000);
+    myservo.write(200);
+    delay(200);
+    myservo.write(200);
+    digitalWrite(GreenLed, LOW);  // Đèn xanh tắt
+    delay(200);
+    //=============================RESET==================
+    lcd.setCursor(0, 0);
+    lcd.print("Scan Your Card");
+    lcd.setCursor(0, 1);
+    lcd.print("Enter the Pass");
+  } else {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Access Denied");  // Sai thẻ
+    digitalWrite(RedLed, HIGH);  // Đèn đỏ bật
+    delay(300);
+    tone(Buzzer, 500, 900);
+    delay(1500);
+    noTone(Buzzer);
+    delay(200);
+    tone(Buzzer, 500, 900);
+    delay(1500);
+    noTone(Buzzer);
+    delay(500);
+    digitalWrite(RedLed, LOW); // Đèn đỏ tắt
+    delay(200);
+    //============RESET==================
+    lcd.setCursor(0, 0);
+    lcd.print("Scan Your Card");
+    lcd.setCursor(0, 1);
+    lcd.print("Enter the Pass");
+  }
+ }
+ vTaskDelete(NULL);
+}
